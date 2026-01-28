@@ -52,7 +52,9 @@ const INTERNAL_GATEWAY_HOST = process.env.INTERNAL_GATEWAY_HOST ?? "127.0.0.1";
 const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}`;
 
 // Always run the built-from-source CLI entry directly to avoid PATH/global-install mismatches.
-const CLAWDBOT_ENTRY = process.env.CLAWDBOT_ENTRY?.trim() || "/clawdbot/dist/entry.js";
+// Support both moltbot and clawdbot paths for backward compatibility.
+const CLAWDBOT_ENTRY = process.env.CLAWDBOT_ENTRY?.trim() ||
+  (fs.existsSync("/moltbot/dist/entry.js") ? "/moltbot/dist/entry.js" : "/clawdbot/dist/entry.js");
 const CLAWDBOT_NODE = process.env.CLAWDBOT_NODE?.trim() || "node";
 
 function clawArgs(args) {
@@ -60,7 +62,20 @@ function clawArgs(args) {
 }
 
 function configPath() {
-  return process.env.CLAWDBOT_CONFIG_PATH?.trim() || path.join(STATE_DIR, "clawdbot.json");
+  if (process.env.CLAWDBOT_CONFIG_PATH?.trim()) {
+    return process.env.CLAWDBOT_CONFIG_PATH.trim();
+  }
+  // Check for moltbot.json first (new name), fall back to clawdbot.json (old name)
+  const moltbotConfig = path.join(STATE_DIR, "moltbot.json");
+  const clawdbotConfig = path.join(STATE_DIR, "clawdbot.json");
+  try {
+    if (fs.existsSync(moltbotConfig)) return moltbotConfig;
+    if (fs.existsSync(clawdbotConfig)) return clawdbotConfig;
+  } catch {
+    // ignore
+  }
+  // Default to moltbot.json for new installations
+  return moltbotConfig;
 }
 
 function isConfigured() {
@@ -177,14 +192,14 @@ function requireSetupAuth(req, res, next) {
   const header = req.headers.authorization || "";
   const [scheme, encoded] = header.split(" ");
   if (scheme !== "Basic" || !encoded) {
-    res.set("WWW-Authenticate", 'Basic realm="Clawdbot Setup"');
+    res.set("WWW-Authenticate", 'Basic realm="Moltbot Setup"');
     return res.status(401).send("Auth required");
   }
   const decoded = Buffer.from(encoded, "base64").toString("utf8");
   const idx = decoded.indexOf(":");
   const password = idx >= 0 ? decoded.slice(idx + 1) : "";
   if (password !== SETUP_PASSWORD) {
-    res.set("WWW-Authenticate", 'Basic realm="Clawdbot Setup"');
+    res.set("WWW-Authenticate", 'Basic realm="Moltbot Setup"');
     return res.status(401).send("Invalid password");
   }
   return next();
@@ -210,7 +225,7 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Clawdbot Setup</title>
+  <title>Moltbot Setup</title>
   <style>
     body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 2rem; max-width: 900px; }
     .card { border: 1px solid #ddd; border-radius: 12px; padding: 1.25rem; margin: 1rem 0; }
@@ -222,14 +237,14 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
   </style>
 </head>
 <body>
-  <h1>Clawdbot Setup</h1>
-  <p class="muted">This wizard configures Clawdbot by running the same onboarding command it uses in the terminal, but from the browser.</p>
+  <h1>Moltbot Setup 🦞</h1>
+  <p class="muted">This wizard configures Moltbot (formerly Clawdbot) by running the same onboarding command it uses in the terminal, but from the browser.</p>
 
   <div class="card">
     <h2>Status</h2>
     <div id="status">Loading...</div>
     <div style="margin-top: 0.75rem">
-      <a href="/clawdbot" target="_blank">Open Clawdbot UI</a>
+      <a href="/clawdbot" target="_blank">Open Moltbot UI</a>
       &nbsp;|&nbsp;
       <a href="/setup/export" target="_blank">Download backup (.tar.gz)</a>
     </div>
@@ -257,7 +272,7 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
 
   <div class="card">
     <h2>2) Optional: Channels</h2>
-    <p class="muted">You can also add channels later inside Clawdbot, but this helps you get messaging working immediately.</p>
+    <p class="muted">You can also add channels later inside Moltbot, but this helps you get messaging working immediately.</p>
 
     <label>Telegram bot token (optional)</label>
     <input id="telegramToken" type="password" placeholder="123456:ABC..." />
@@ -285,7 +300,7 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
     <button id="pairingApprove" style="background:#1f2937; margin-left:0.5rem">Approve pairing</button>
     <button id="reset" style="background:#444; margin-left:0.5rem">Reset setup</button>
     <pre id="log" style="white-space:pre-wrap"></pre>
-    <p class="muted">Reset deletes the Clawdbot config file so you can rerun onboarding. Pairing approval lets you grant DM access when dmPolicy=pairing.</p>
+    <p class="muted">Reset deletes the Moltbot config file so you can rerun onboarding. Pairing approval lets you grant DM access when dmPolicy=pairing.</p>
   </div>
 
   <script src="/setup/app.js"></script>
@@ -297,7 +312,7 @@ app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
   const version = await runCmd(CLAWDBOT_NODE, clawArgs(["--version"]));
   const channelsHelp = await runCmd(CLAWDBOT_NODE, clawArgs(["channels", "add", "--help"]));
 
-  // We reuse Clawdbot's own auth-choice grouping logic indirectly by hardcoding the same group defs.
+  // We reuse Moltbot's own auth-choice grouping logic indirectly by hardcoding the same group defs.
   // This is intentionally minimal; later we can parse the CLI help output to stay perfectly in sync.
   const authGroups = [
     { value: "openai", label: "OpenAI", hint: "Codex OAuth + API key", options: [
@@ -470,7 +485,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 
     if (payload.telegramToken?.trim()) {
       if (!supports("telegram")) {
-        extra += "\n[telegram] skipped (this clawdbot build does not list telegram in `channels add --help`)\n";
+        extra += "\n[telegram] skipped (this moltbot build does not list telegram in `channels add --help`)\n";
       } else {
         // Avoid `channels add` here (it has proven flaky across builds); write config directly.
         const token = payload.telegramToken.trim();
@@ -493,7 +508,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 
     if (payload.discordToken?.trim()) {
       if (!supports("discord")) {
-        extra += "\n[discord] skipped (this clawdbot build does not list discord in `channels add --help`)\n";
+        extra += "\n[discord] skipped (this moltbot build does not list discord in `channels add --help`)\n";
       } else {
         const token = payload.discordToken.trim();
         const cfgObj = {
@@ -516,7 +531,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 
     if (payload.slackBotToken?.trim() || payload.slackAppToken?.trim()) {
       if (!supports("slack")) {
-        extra += "\n[slack] skipped (this clawdbot build does not list slack in `channels add --help`)\n";
+        extra += "\n[slack] skipped (this moltbot build does not list slack in `channels add --help`)\n";
       } else {
         const cfgObj = {
           enabled: true,
